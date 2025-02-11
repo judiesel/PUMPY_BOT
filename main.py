@@ -1,65 +1,64 @@
 import os
 import requests
 import time
-import numpy as np
 import hmac, hashlib, json, base64
 from datetime import datetime
 import threading
 from flask import Flask, jsonify
 
 # === CONFIGURATION GLOBALE ===
-COINGECKO_API_URL = "https://api.coingecko.com/api/v3"
-COINBASE_API_KEY = os.getenv("COINBASE_API_KEY")
-COINBASE_API_SECRET = os.getenv("COINBASE_API_SECRET")
-COINBASE_API_PASSPHRASE = os.getenv("COINBASE_API_PASSPHRASE")
+KRAKEN_API_URL = "https://api.kraken.com/0"
+KRAKEN_API_KEY = os.getenv("KRAKEN_API_KEY")  # Récupère la clé API stockée en variable d'environnement
+KRAKEN_API_SECRET = os.getenv("KRAKEN_API_SECRET")  # Récupère le secret API stocké en variable d'environnement
 
 PAPER_TRADING = True  # Mode fictif activé
 TRADE_ALLOCATION = 0.1  # % du capital alloué à chaque trade
 DASHBOARD_REFRESH = 5  # Rafraîchir toutes les 5 secondes
-THRESHOLD_VOLATILITY = 3.0  # Détection avancée des cryptos volatiles
 HIGH_FREQUENCY_TRADING = True  # Scalping haute fréquence
 CAPITAL = 10000  # Capital de départ fictif
 STOP_LOSS_PERCENTAGE = 3  # Stop-loss dynamique
 TAKE_PROFIT_PERCENTAGE = 5  # Take-profit optimisé
 
-# === FRAIS COINBASE ===
-MAKER_FEE = 0.002  # 0.20%
-TAKER_FEE = 0.001  # 0.10%
+# === FRAIS KRAKEN ===
+MAKER_FEE = 0.0026  # 0.26%
+TAKER_FEE = 0.0016  # 0.16%
 
-# === DÉTECTION DES MEILLEURES CRYPTOS ===
+# === OBTENIR LES MEILLEURES CRYPTOS SUR KRAKEN ===
 def get_top_cryptos():
-    """Récupère les 10 cryptos les plus capitalisées et retourne leurs IDs"""
-    url = f"{COINGECKO_API_URL}/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=10&page=1"
-    
+    """Récupère les paires de trading disponibles sur Kraken"""
+    url = f"{KRAKEN_API_URL}/public/AssetPairs"
+
     try:
         response = requests.get(url, timeout=5)
         data = response.json()
 
-        if isinstance(data, list):  # Vérifie que `data` est bien une liste et non une erreur
-            return {coin["symbol"].upper() + "USDT": coin["id"] for coin in data}
+        if "result" in data:
+            pairs = list(data["result"].keys())
+            return {pair: pair for pair in pairs if "USD" in pair}  # Filtrer uniquement les paires en USD
         else:
-            print(f"⚠️ Réponse inattendue de CoinGecko : {data}")
+            print(f"⚠️ Réponse inattendue de Kraken : {data}")
             return {}
     except requests.exceptions.RequestException as e:
-        print(f"🚨 Erreur de connexion à CoinGecko : {e}")
+        print(f"🚨 Erreur de connexion à Kraken : {e}")
         return {}
 
-# === OBTENIR LES PRIX DES MEILLEURES CRYPTOS ===
-def get_market_price(pair, crypto_id):
-    """Récupère le prix actuel d'une crypto depuis CoinGecko"""
-    url = f"{COINGECKO_API_URL}/simple/price?ids={crypto_id}&vs_currencies=usd"
-    
+# === OBTENIR LES PRIX EN TEMPS RÉEL DE KRAKEN ===
+def get_market_price(pair):
+    """Récupère le prix actuel d'une crypto depuis Kraken"""
+    url = f"{KRAKEN_API_URL}/public/Ticker?pair={pair}"
+
     try:
         response = requests.get(url, timeout=5)
         data = response.json()
-        
-        if crypto_id in data and "usd" in data[crypto_id]:
-            return data[crypto_id]["usd"]
+
+        if "result" in data:
+            first_key = list(data["result"].keys())[0]  # Obtenir la clé du dictionnaire
+            return float(data["result"][first_key]["c"][0])  # Dernier prix du marché
         else:
-            print(f"⚠️ CoinGecko n'a pas retourné de prix pour {crypto_id}. Réponse reçue : {data}")
+            print(f"⚠️ Kraken n'a pas retourné de prix pour {pair}. Réponse reçue : {data}")
             return None
     except requests.exceptions.RequestException as e:
-        print(f"🚨 Erreur de connexion à CoinGecko : {e}")
+        print(f"🚨 Erreur de connexion à Kraken : {e}")
         return None
 
 # === DÉTECTION AUTOMATIQUE DE LA CRYPTO LA PLUS VOLATILE ===
@@ -69,14 +68,14 @@ def find_most_volatile_crypto():
     
     if not top_cryptos:
         print("❌ Impossible de récupérer les cryptos du moment, réessai en cours...")
-        return None, None
+        return None
 
     volatilities = {}
 
-    for pair, crypto_id in top_cryptos.items():
+    for pair in top_cryptos.keys():
         prices = []
         for _ in range(3):  # Analyse sur 15 secondes (3 requêtes de 5s)
-            price = get_market_price(pair, crypto_id)
+            price = get_market_price(pair)
             if price:
                 prices.append(price)
             time.sleep(5)
@@ -87,52 +86,18 @@ def find_most_volatile_crypto():
 
     if not volatilities:
         print("❌ Aucune volatilité détectée, re-scan en cours...")
-        return None, None
+        return None
 
     best_pair = max(volatilities, key=volatilities.get)
     print(f"🚀 Crypto la plus volatile détectée : {best_pair}")
-    return best_pair, top_cryptos.get(best_pair, None)
-
-# === PLACER UN TRADE SUR COINBASE ===
-def place_trade(pair, action, amount):
-    """Passe un trade sur Coinbase"""
-    url = "https://api.pro.coinbase.com/orders"
-    timestamp = str(int(time.time()))
-    body = json.dumps({
-        "side": action,
-        "product_id": pair,
-        "size": str(amount),
-        "type": "market"
-    })
-
-    message = timestamp + "POST" + "/orders" + body
-
-    signature = hmac.new(
-        base64.b64decode(COINBASE_API_SECRET),
-        message.encode("utf-8"),
-        hashlib.sha256
-    ).digest()
-
-    headers = {
-        "CB-ACCESS-KEY": COINBASE_API_KEY,
-        "CB-ACCESS-SIGN": base64.b64encode(signature).decode(),
-        "CB-ACCESS-TIMESTAMP": timestamp,
-        "CB-ACCESS-PASSPHRASE": COINBASE_API_PASSPHRASE,
-        "Content-Type": "application/json"
-    }
-
-    if PAPER_TRADING:
-        print(f"[PAPER] {action.upper()} {amount} de {pair} au prix actuel.")
-    else:
-        response = requests.post(url, headers=headers, data=body)
-        print(f"⚠️ Trade {action.upper()} exécuté sur Coinbase : {response.json()}")
+    return best_pair
 
 # === DASHBOARD WEB ===
 app = Flask(__name__)
 
 @app.route('/status')
 def get_status():
-    best_pair, _ = find_most_volatile_crypto()
+    best_pair = find_most_volatile_crypto()
     return jsonify({
         "Crypto suivie": best_pair or "Aucune crypto détectée",
         "Capital": CAPITAL
@@ -147,17 +112,17 @@ def run_pumpy():
     print("🚀 PUMPY démarre en mode Paper Trading...")
 
     while True:
-        best_pair, crypto_id = find_most_volatile_crypto()
+        best_pair = find_most_volatile_crypto()
         if best_pair is None:
             time.sleep(DASHBOARD_REFRESH)
             continue
 
-        market_price = get_market_price(best_pair, crypto_id)
+        market_price = get_market_price(best_pair)
         if market_price:
             trade_size = CAPITAL * TRADE_ALLOCATION
-            place_trade(best_pair, "buy", trade_size)
+            print(f"📈 Trade simulé : Achat de {trade_size} USD sur {best_pair} à {market_price}$")
             time.sleep(5)
-            place_trade(best_pair, "sell", trade_size * (1 + TAKE_PROFIT_PERCENTAGE / 100))
+            print(f"📈 Trade simulé : Vente de {trade_size} USD sur {best_pair} à {market_price * (1 + TAKE_PROFIT_PERCENTAGE / 100)}$")
             profit_today = (trade_size * (TAKE_PROFIT_PERCENTAGE / 100)) - (trade_size * TAKER_FEE)
             CAPITAL += profit_today
             print(f"📈 Gain réalisé : {profit_today:.2f}$. Nouveau capital : {CAPITAL:.2f}$")
