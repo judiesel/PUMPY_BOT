@@ -134,3 +134,7 @@ if __name__ == "__main__":
     flask_thread = threading.Thread(target=run_flask)
     flask_thread.start()
     run_pumpy()
+
+@app.route('/')
+def home():
+    return "🚀 PUMPY est en ligne ! Utilise /status pour voir les performances.", 200
