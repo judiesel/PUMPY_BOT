@@ -34,7 +34,12 @@ def get_top_cryptos():
     try:
         response = requests.get(url, timeout=5)
         data = response.json()
-        return {coin["symbol"].upper() + "USDT": coin["id"] for coin in data}
+
+        if isinstance(data, list):  # Vérifie que `data` est bien une liste et non une erreur
+            return {coin["symbol"].upper() + "USDT": coin["id"] for coin in data}
+        else:
+            print(f"⚠️ Réponse inattendue de CoinGecko : {data}")
+            return {}
     except requests.exceptions.RequestException as e:
         print(f"🚨 Erreur de connexion à CoinGecko : {e}")
         return {}
@@ -91,39 +96,50 @@ def find_most_volatile_crypto():
 # === PLACER UN TRADE SUR COINBASE ===
 def place_trade(pair, action, amount):
     """Passe un trade sur Coinbase"""
-    url = f"https://api.pro.coinbase.com/orders"
+    url = "https://api.pro.coinbase.com/orders"
     timestamp = str(int(time.time()))
-    message = timestamp + 'POST' + '/orders' + json.dumps({
+    body = json.dumps({
         "side": action,
         "product_id": pair,
-        "size": amount,
+        "size": str(amount),
         "type": "market"
     })
 
+    message = timestamp + "POST" + "/orders" + body
+
     signature = hmac.new(
         base64.b64decode(COINBASE_API_SECRET),
-        message.encode('utf-8'),
+        message.encode("utf-8"),
         hashlib.sha256
     ).digest()
 
     headers = {
-        'CB-ACCESS-KEY': COINBASE_API_KEY,
-        'CB-ACCESS-SIGN': base64.b64encode(signature).decode(),
-        'CB-ACCESS-TIMESTAMP': timestamp,
-        'CB-ACCESS-PASSPHRASE': COINBASE_API_PASSPHRASE,
-        'Content-Type': 'application/json'
+        "CB-ACCESS-KEY": COINBASE_API_KEY,
+        "CB-ACCESS-SIGN": base64.b64encode(signature).decode(),
+        "CB-ACCESS-TIMESTAMP": timestamp,
+        "CB-ACCESS-PASSPHRASE": COINBASE_API_PASSPHRASE,
+        "Content-Type": "application/json"
     }
 
     if PAPER_TRADING:
         print(f"[PAPER] {action.upper()} {amount} de {pair} au prix actuel.")
     else:
-        response = requests.post(url, headers=headers, json={
-            "side": action,
-            "product_id": pair,
-            "size": amount,
-            "type": "market"
-        })
+        response = requests.post(url, headers=headers, data=body)
         print(f"⚠️ Trade {action.upper()} exécuté sur Coinbase : {response.json()}")
+
+# === DASHBOARD WEB ===
+app = Flask(__name__)
+
+@app.route('/status')
+def get_status():
+    best_pair, _ = find_most_volatile_crypto()
+    return jsonify({
+        "Crypto suivie": best_pair or "Aucune crypto détectée",
+        "Capital": CAPITAL
+    })
+
+def run_flask():
+    app.run(host="0.0.0.0", port=5000, debug=False)
 
 # === LANCEMENT DU BOT ===
 def run_pumpy():
@@ -147,20 +163,6 @@ def run_pumpy():
             print(f"📈 Gain réalisé : {profit_today:.2f}$. Nouveau capital : {CAPITAL:.2f}$")
 
         time.sleep(DASHBOARD_REFRESH)
-
-# === DASHBOARD WEB ===
-app = Flask(__name__)
-
-@app.route('/status')
-def get_status():
-    best_pair, _ = find_most_volatile_crypto()
-    return jsonify({
-        "Crypto suivie": best_pair or "Aucune crypto détectée",
-        "Capital": CAPITAL
-    })
-
-def run_flask():
-    app.run(host="0.0.0.0", port=5000, debug=False)
 
 # === DÉMARRAGE SUR RAILWAY ===
 if __name__ == "__main__":
