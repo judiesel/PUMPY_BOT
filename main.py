@@ -61,6 +61,10 @@ def find_most_volatile_crypto():
             volatility = max(prices) - min(prices)
             volatilities[pair] = volatility
 
+    if not volatilities:
+        print("❌ Aucune volatilité détectée, re-scan en cours...")
+        return None  # Retourne None pour éviter les erreurs
+
     best_pair = max(volatilities, key=volatilities.get)
     print(f"🚀 Crypto la plus volatile détectée : {best_pair}")
     return best_pair
@@ -87,8 +91,11 @@ def run_pumpy():
     
     while True:
         best_pair = find_most_volatile_crypto()
-        market_price = get_market_price(best_pair)
+        if best_pair is None:
+            time.sleep(DASHBOARD_REFRESH)
+            continue
 
+        market_price = get_market_price(best_pair)
         if market_price:
             trade_size = CAPITAL * TRADE_ALLOCATION
             place_trade(best_pair, "buy", trade_size)
@@ -108,14 +115,15 @@ app = Flask(__name__)
 @app.route('/status')
 def get_status():
     return jsonify({
-        "Crypto suivie": find_most_volatile_crypto(),
-        "Prix actuel": get_market_price(find_most_volatile_crypto()),
+        "Crypto suivie": find_most_volatile_crypto() or "Aucune crypto détectée",
+        "Prix actuel": get_market_price(find_most_volatile_crypto()) or "Non disponible",
         "Capital": CAPITAL
     })
 
 def run_flask():
     app.run(host="0.0.0.0", port=5000, debug=False)
 
+# === DÉMARRAGE AUTOMATIQUE SUR RAILWAY ===
 if __name__ == "__main__":
     flask_thread = threading.Thread(target=run_flask)
     flask_thread.start()
